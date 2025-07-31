@@ -6,7 +6,127 @@ const router = express.Router();
 let transfers = [];
 let transferCounter = 1;
 
-// Initiate a transfer between wallets
+/**
+ * @swagger
+ * components:
+ *   schemas:
+ *     Transfer:
+ *       type: object
+ *       properties:
+ *         id:
+ *           type: string
+ *           description: Unique transfer identifier
+ *           example: "transfer_1"
+ *         fromWalletId:
+ *           type: string
+ *           description: Source wallet ID
+ *           example: "wallet_1000"
+ *         toWalletId:
+ *           type: string
+ *           description: Destination wallet ID
+ *           example: "wallet_1001"
+ *         amount:
+ *           type: number
+ *           description: Transfer amount
+ *           example: 50000
+ *         currency:
+ *           type: string
+ *           description: Transfer currency
+ *           example: "USDC"
+ *         reason:
+ *           type: string
+ *           description: Transfer reason/description
+ *           example: "Liquidity rebalancing between subsidiaries"
+ *         status:
+ *           type: string
+ *           enum: [processing, completed, failed]
+ *           description: Transfer status
+ *           example: "processing"
+ *         initiatedAt:
+ *           type: string
+ *           format: date-time
+ *           description: Transfer initiation timestamp
+ *         estimatedCompletion:
+ *           type: string
+ *           format: date-time
+ *           description: Estimated completion time
+ *         fees:
+ *           type: number
+ *           description: Transfer fees (0.1% of amount)
+ *           example: 50
+ *         transactionHash:
+ *           type: string
+ *           description: Blockchain transaction hash
+ *           example: "0xe75225c349546"
+ */
+
+/**
+ * @swagger
+ * /api/transfers/initiate:
+ *   post:
+ *     summary: Initiate a transfer between wallets
+ *     description: Creates a new interbank transfer that completes in approximately 30 seconds
+ *     tags: [Transfers]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fromWalletId
+ *               - toWalletId
+ *               - amount
+ *               - currency
+ *             properties:
+ *               fromWalletId:
+ *                 type: string
+ *                 description: Source wallet identifier
+ *                 example: "wallet_1000"
+ *               toWalletId:
+ *                 type: string
+ *                 description: Destination wallet identifier
+ *                 example: "wallet_1001"
+ *               amount:
+ *                 type: number
+ *                 minimum: 0.01
+ *                 description: Transfer amount (must be greater than 0)
+ *                 example: 50000
+ *               currency:
+ *                 type: string
+ *                 description: Transfer currency
+ *                 example: "USDC"
+ *               reason:
+ *                 type: string
+ *                 description: Optional transfer reason
+ *                 example: "Liquidity rebalancing between subsidiaries"
+ *     responses:
+ *       201:
+ *         description: Transfer initiated successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Transfer initiated successfully"
+ *                 transfer:
+ *                   $ref: '#/components/schemas/Transfer'
+ *                 estimatedTime:
+ *                   type: string
+ *                   example: "30 seconds"
+ *       400:
+ *         description: Invalid request parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 error:
+ *                   type: string
+ *                   example: "Missing required fields"
+ */
 router.post('/initiate', (req, res) => {
   const { fromWalletId, toWalletId, amount, currency, reason } = req.body;
   
@@ -58,7 +178,59 @@ router.post('/initiate', (req, res) => {
   });
 });
 
-// Get transfer status
+/**
+ * @swagger
+ * /api/transfers/{transferId}/status:
+ *   get:
+ *     summary: Get transfer status
+ *     description: Retrieves the current status and details of a specific transfer
+ *     tags: [Transfers]
+ *     parameters:
+ *       - in: path
+ *         name: transferId
+ *         required: true
+ *         description: Unique transfer identifier
+ *         schema:
+ *           type: string
+ *           example: "transfer_1"
+ *     responses:
+ *       200:
+ *         description: Transfer status retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 transferId:
+ *                   type: string
+ *                   example: "transfer_1"
+ *                 status:
+ *                   type: string
+ *                   example: "completed"
+ *                 amount:
+ *                   type: number
+ *                   example: 50000
+ *                 currency:
+ *                   type: string
+ *                   example: "USDC"
+ *                 fromWallet:
+ *                   type: string
+ *                   example: "wallet_1000"
+ *                 toWallet:
+ *                   type: string
+ *                   example: "wallet_1001"
+ *                 transactionHash:
+ *                   type: string
+ *                   example: "0xe75225c349546"
+ *                 completedAt:
+ *                   type: string
+ *                   format: date-time
+ *                 processingTime:
+ *                   type: string
+ *                   example: "5 seconds"
+ *       404:
+ *         description: Transfer not found
+ */
 router.get('/:transferId/status', (req, res) => {
   const { transferId } = req.params;
   
@@ -85,7 +257,66 @@ router.get('/:transferId/status', (req, res) => {
   });
 });
 
-// Get transfer history for a wallet
+/**
+ * @swagger
+ * /api/transfers/history/{walletId}:
+ *   get:
+ *     summary: Get transfer history for a wallet
+ *     description: Retrieves all transfers (incoming and outgoing) for a specific wallet
+ *     tags: [Transfers]
+ *     parameters:
+ *       - in: path
+ *         name: walletId
+ *         required: true
+ *         description: Wallet identifier
+ *         schema:
+ *           type: string
+ *           example: "wallet_1000"
+ *     responses:
+ *       200:
+ *         description: Transfer history retrieved successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 walletId:
+ *                   type: string
+ *                   example: "wallet_1000"
+ *                 totalTransfers:
+ *                   type: number
+ *                   example: 1
+ *                 transfers:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       id:
+ *                         type: string
+ *                         example: "transfer_1"
+ *                       type:
+ *                         type: string
+ *                         enum: [incoming, outgoing]
+ *                         example: "outgoing"
+ *                       amount:
+ *                         type: number
+ *                         example: 50000
+ *                       currency:
+ *                         type: string
+ *                         example: "USDC"
+ *                       otherWallet:
+ *                         type: string
+ *                         example: "wallet_1001"
+ *                       status:
+ *                         type: string
+ *                         example: "completed"
+ *                       date:
+ *                         type: string
+ *                         format: date-time
+ *                       reason:
+ *                         type: string
+ *                         example: "Liquidity rebalancing between subsidiaries"
+ */
 router.get('/history/:walletId', (req, res) => {
   const { walletId } = req.params;
   
