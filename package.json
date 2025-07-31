@@ -1,0 +1,16 @@
+{
+  "name": "stablecoin-api",
+  "version": "1.0.0",
+  "description": "Goal: Enable 30-second cross-border transfers for regional banks using stablecoin infrastructure.",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "express": "^5.1.0"
+  }
+}
