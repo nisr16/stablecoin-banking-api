@@ -418,4 +418,4 @@ const server = app.listen(port, () => {
 });
 
 // Initialize WebSocket server for real-time notifications
-notificationService.setWebSocketServer(server);
+notificationService.setWebSocketServer(server);// Force Railway deployment - Fri Aug  1 18:39:37 -03 2025
