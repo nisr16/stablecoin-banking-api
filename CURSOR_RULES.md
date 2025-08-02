@@ -45,6 +45,21 @@
 - Only make requested changes
 - Fix any linter errors introduced
 
+### **6.1. Code Documentation Rules:**
+- **ALWAYS** add comprehensive comments to all code files
+- **ALWAYS** explain the purpose and functionality of each function
+- **ALWAYS** document complex business logic with clear explanations
+- **ALWAYS** add file-level comments explaining the module's purpose
+- **ALWAYS** document database queries and their purpose
+- **ALWAYS** explain error handling and edge cases
+- **ALWAYS** use plain English comments that non-technical people can understand
+- **ALWAYS** document API endpoints with clear examples
+- **ALWAYS** explain authentication and authorization logic
+- **ALWAYS** document database schema relationships
+- **ALWAYS** explain configuration and environment setup
+- **ALWAYS** document testing strategies and test data
+- **ALWAYS** explain deployment and operational procedures
+
 ### **7. Documentation Rules:**
 - Update README.md for new features
 - Update API documentation (Swagger)
