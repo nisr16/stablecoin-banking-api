@@ -1,10 +1,7 @@
 // Wallet management for banks
 const express = require('express');
 const router = express.Router();
-
-// Simple in-memory storage (we'll upgrade this later)
-let wallets = [];
-let walletCounter = 1000;
+const db = require('./database/connection');
 
 /**
  * @swagger
@@ -20,7 +17,7 @@ let walletCounter = 1000;
  *         bankName:
  *           type: string
  *           description: Name of the bank
- *           example: "Banco Nacional"
+ *           example: "Nexora Bank"
  *         subsidiaryName:
  *           type: string
  *           description: Name of the bank subsidiary
@@ -68,7 +65,7 @@ let walletCounter = 1000;
  *               bankName:
  *                 type: string
  *                 description: Name of the bank
- *                 example: "Banco Nacional"
+ *                 example: "Nexora Bank"
  *               subsidiaryName:
  *                 type: string
  *                 description: Name of the bank subsidiary
@@ -105,7 +102,7 @@ let walletCounter = 1000;
  *                   items:
  *                     type: string
  */
-router.post('/create', (req, res) => {
+router.post('/create', async (req, res) => {
   const { bankName, subsidiaryName, currency } = req.body;
   
   // Validate required fields
@@ -116,24 +113,44 @@ router.post('/create', (req, res) => {
     });
   }
 
-  // Create new wallet
-  const wallet = {
-    id: `wallet_${walletCounter++}`,
-    bankName: bankName,
-    subsidiaryName: subsidiaryName,
-    currency: currency,
-    balance: 0,
-    status: "active",
-    createdAt: new Date(),
-    publicAddress: `0x${Math.random().toString(16).substr(2, 40)}`
-  };
+  try {
+    // Get the first vault (for simplicity, in production you'd select based on criteria)
+    const vaultStmt = db.prepare('SELECT vault_id FROM custody_vault LIMIT 1');
+    const vault = vaultStmt.get();
+    if (!vault) {
+      return res.status(500).json({
+        error: "No custody vault available"
+      });
+    }
 
-  wallets.push(wallet);
+    // Create new FBO wallet
+    const walletAddress = `0x${Math.random().toString(16).substr(2, 40)}`;
+    const walletStmt = db.prepare(
+      'INSERT INTO fbo_wallets (vault_id, wallet_address, balance, creation_date) VALUES (?, ?, ?, ?)'
+    );
+    const result = walletStmt.run(vault.vault_id, walletAddress, 0, new Date().toISOString());
 
-  res.status(201).json({
-    message: "Wallet created successfully",
-    wallet: wallet
-  });
+    const wallet = {
+      id: `wallet_${result.lastInsertRowid}`,
+      bankName: bankName,
+      subsidiaryName: subsidiaryName,
+      currency: currency,
+      balance: 0,
+      status: "active",
+      createdAt: new Date(),
+      publicAddress: walletAddress
+    };
+
+    res.status(201).json({
+      message: "Wallet created successfully",
+      wallet: wallet
+    });
+  } catch (error) {
+    console.error('Error creating wallet:', error);
+    res.status(500).json({
+      error: "Failed to create wallet"
+    });
+  }
 });
 
 /**
@@ -182,23 +199,36 @@ router.post('/create', (req, res) => {
  *                   type: string
  *                   example: "Wallet not found"
  */
-router.get('/:walletId/balance', (req, res) => {
+router.get('/:walletId/balance', async (req, res) => {
   const { walletId } = req.params;
   
-  const wallet = wallets.find(w => w.id === walletId);
-  
-  if (!wallet) {
-    return res.status(404).json({
-      error: "Wallet not found"
+  try {
+    // Extract numeric ID from wallet_123 format
+    const numericId = walletId.replace('wallet_', '');
+    
+    const walletStmt = db.prepare(
+      'SELECT wallet_id, wallet_address, balance, creation_date FROM fbo_wallets WHERE wallet_id = ?'
+    );
+    const wallet = walletStmt.get(numericId);
+    
+    if (!wallet) {
+      return res.status(404).json({
+        error: "Wallet not found"
+      });
+    }
+
+    res.json({
+      walletId: `wallet_${wallet.wallet_id}`,
+      balance: wallet.balance,
+      currency: "USDC", // Default currency
+      lastUpdated: new Date()
+    });
+  } catch (error) {
+    console.error('Error getting wallet balance:', error);
+    res.status(500).json({
+      error: "Failed to get wallet balance"
     });
   }
-
-  res.json({
-    walletId: wallet.id,
-    balance: wallet.balance,
-    currency: wallet.currency,
-    lastUpdated: new Date()
-  });
 });
 
 /**
@@ -215,7 +245,7 @@ router.get('/:walletId/balance', (req, res) => {
  *         description: Name of the bank
  *         schema:
  *           type: string
- *           example: "Banco Nacional"
+ *           example: "Nexora Bank"
  *     responses:
  *       200:
  *         description: Bank wallets retrieved successfully
@@ -226,7 +256,7 @@ router.get('/:walletId/balance', (req, res) => {
  *               properties:
  *                 bankName:
  *                   type: string
- *                   example: "Banco Nacional"
+ *                   example: "Nexora Bank"
  *                 totalWallets:
  *                   type: number
  *                   example: 2
@@ -235,16 +265,39 @@ router.get('/:walletId/balance', (req, res) => {
  *                   items:
  *                     $ref: '#/components/schemas/Wallet'
  */
-router.get('/list/:bankName', (req, res) => {
+router.get('/list/:bankName', async (req, res) => {
   const { bankName } = req.params;
   
-  const bankWallets = wallets.filter(w => w.bankName === bankName);
-  
-  res.json({
-    bankName: bankName,
-    totalWallets: bankWallets.length,
-    wallets: bankWallets
-  });
+  try {
+    // For now, return all wallets since we don't store bank name in the database
+    // In a real implementation, you'd have a separate table for bank information
+    const walletsStmt = db.prepare(
+      'SELECT wallet_id, wallet_address, balance, creation_date FROM fbo_wallets'
+    );
+    const wallets = walletsStmt.all();
+    
+    const formattedWallets = wallets.map(w => ({
+      id: `wallet_${w.wallet_id}`,
+      bankName: bankName, // Use the requested bank name
+      subsidiaryName: "Main Branch", // Default value
+      currency: "USDC",
+      balance: w.balance,
+      status: "active",
+      createdAt: w.creation_date,
+      publicAddress: w.wallet_address
+    }));
+    
+    res.json({
+      bankName: bankName,
+      totalWallets: wallets.length,
+      wallets: formattedWallets
+    });
+  } catch (error) {
+    console.error('Error listing wallets:', error);
+    res.status(500).json({
+      error: "Failed to list wallets"
+    });
+  }
 });
 
 module.exports = router;

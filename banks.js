@@ -143,37 +143,59 @@ router.post('/register', async (req, res) => {
     const bank_id = result.lastInsertRowid;
 
     // Create default roles for this bank
+    console.log('Creating roles for bank_id:', bank_id);
     const defaultRoles = [
-      [bank_id, 'Viewer', 1, JSON.stringify(['reports']), 0, false, false, false],
-      [bank_id, 'Operator', 5, JSON.stringify(['transfers', 'reports']), 100000, false, false, false],
-      [bank_id, 'Manager', 7, JSON.stringify(['transfers', 'approvals', 'reports']), 500000, true, false, false],
-      [bank_id, 'Admin', 10, JSON.stringify(['all']), 1000000, true, true, true]
+      [bank_id, 'Viewer', 1, JSON.stringify(['reports']), 0, 0, 0, 0],
+      [bank_id, 'Operator', 5, JSON.stringify(['transfers', 'reports']), 100000, 0, 0, 0],
+      [bank_id, 'Manager', 7, JSON.stringify(['transfers', 'approvals', 'reports']), 500000, 1, 0, 0],
+      [bank_id, 'Admin', 10, JSON.stringify(['all']), 1000000, 1, 1, 1]
     ];
 
     for (const role of defaultRoles) {
-      const roleStmt = db.prepare(`
-        INSERT INTO roles (bank_id, role_name, role_level, permissions, max_transfer_amount, can_approve_transfers, can_create_users, can_modify_settings)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      `);
-      roleStmt.run(...role);
+      try {
+        const roleStmt = db.prepare(`
+          INSERT INTO roles (bank_id, role_name, role_level, permissions, max_transfer_amount, can_approve_transfers, can_create_users, can_modify_settings)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        roleStmt.run(...role);
+        console.log('Created role:', role[1], 'for bank_id:', role[0]);
+      } catch (roleError) {
+        console.error('Error creating role:', role[1], 'Error:', roleError.message);
+        throw roleError;
+      }
     }
 
     // Create default approval rules
+    console.log('Creating approval rules for bank_id:', bank_id);
     const defaultRules = [
-      [bank_id, 'Small Transfers', 0, 9999.99, 1, 0, true],
-      [bank_id, 'Medium Transfers', 10000, 49999.99, 2, 1, false],
-      [bank_id, 'Large Transfers', 50000, 249999.99, 3, 1, false],
-      [bank_id, 'Very Large Transfers', 250000, null, 4, 2, false]
+      [bank_id, 'Small Transfers', 0, 9999.99, 1, 0, 1],
+      [bank_id, 'Medium Transfers', 10000, 49999.99, 2, 1, 0],
+      [bank_id, 'Large Transfers', 50000, 249999.99, 3, 1, 0],
+      [bank_id, 'Very Large Transfers', 250000, null, 4, 2, 0]
     ];
 
     for (const rule of defaultRules) {
-      const ruleStmt = db.prepare(`
-        INSERT INTO approval_rules (bank_id, rule_name, min_amount, max_amount, required_role_level, required_approvals, auto_approve)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-      `);
-      // Handle null values properly
-      const [bankId, ruleName, minAmount, maxAmount, requiredRoleLevel, requiredApprovals, autoApprove] = rule;
-      ruleStmt.run(bankId, ruleName, minAmount, maxAmount || null, requiredRoleLevel, requiredApprovals, autoApprove);
+      try {
+        const ruleStmt = db.prepare(`
+          INSERT INTO approval_rules (bank_id, rule_name, min_amount, max_amount, required_role_level, required_approvals, auto_approve)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        // Handle null values properly - ensure explicit null handling
+        const [bankId, ruleName, minAmount, maxAmount, requiredRoleLevel, requiredApprovals, autoApprove] = rule;
+        ruleStmt.run(
+          bankId, 
+          ruleName, 
+          minAmount, 
+          maxAmount === null ? null : maxAmount, 
+          requiredRoleLevel, 
+          requiredApprovals, 
+          autoApprove
+        );
+        console.log('Created approval rule:', ruleName, 'for bank_id:', bankId);
+      } catch (ruleError) {
+        console.error('Error creating approval rule:', rule[1], 'Error:', ruleError.message);
+        throw ruleError;
+      }
     }
 
     // Get the created bank

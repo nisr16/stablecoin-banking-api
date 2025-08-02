@@ -70,15 +70,15 @@ const router = express.Router();
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.get('/list', authenticateBank, async (req, res) => {
+router.get('/list', authenticateBank, (req, res) => {
   try {
-    const roles = await db.all(`
+    const roles = db.prepare(`
       SELECT role_name, role_level, permissions, max_transfer_amount, 
              can_approve_transfers, can_create_users, can_modify_settings, created_at
       FROM roles 
       WHERE bank_id = ? 
       ORDER BY role_level ASC
-    `, [req.bank.id]);
+    `).all(req.bank.id);
 
     res.json({
       bank_name: req.bank.bank_name,
@@ -160,14 +160,14 @@ router.get('/list', authenticateBank, async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/Error'
  */
-router.get('/approval-rules', authenticateBank, async (req, res) => {
+router.get('/approval-rules', authenticateBank, (req, res) => {
   try {
-    const rules = await db.all(`
+    const rules = db.prepare(`
       SELECT rule_name, min_amount, max_amount, required_role_level, required_approvals, auto_approve, created_at
       FROM approval_rules 
       WHERE bank_id = ? 
       ORDER BY min_amount ASC
-    `, [req.bank.id]);
+    `).all(req.bank.id);
 
     res.json({
       bank_name: req.bank.bank_name,

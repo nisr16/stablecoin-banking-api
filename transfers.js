@@ -1,72 +1,32 @@
-// Transfer functionality for interbank operations
 const express = require('express');
+const db = require('./database/connection');
+const { authenticateBank } = require('./banks');
 const router = express.Router();
 
-// Import wallets from wallet module (we'll connect this)
-let transfers = [];
 let transferCounter = 1;
 
-/**
- * @swagger
- * components:
- *   schemas:
- *     Transfer:
- *       type: object
- *       properties:
- *         id:
- *           type: string
- *           description: Unique transfer identifier
- *           example: "transfer_1"
- *         fromWalletId:
- *           type: string
- *           description: Source wallet ID
- *           example: "wallet_1000"
- *         toWalletId:
- *           type: string
- *           description: Destination wallet ID
- *           example: "wallet_1001"
- *         amount:
- *           type: number
- *           description: Transfer amount
- *           example: 50000
- *         currency:
- *           type: string
- *           description: Transfer currency
- *           example: "USDC"
- *         reason:
- *           type: string
- *           description: Transfer reason/description
- *           example: "Liquidity rebalancing between subsidiaries"
- *         status:
- *           type: string
- *           enum: [processing, completed, failed]
- *           description: Transfer status
- *           example: "processing"
- *         initiatedAt:
- *           type: string
- *           format: date-time
- *           description: Transfer initiation timestamp
- *         estimatedCompletion:
- *           type: string
- *           format: date-time
- *           description: Estimated completion time
- *         fees:
- *           type: number
- *           description: Transfer fees (0.1% of amount)
- *           example: 50
- *         transactionHash:
- *           type: string
- *           description: Blockchain transaction hash
- *           example: "0xe75225c349546"
- */
+// Get approval requirements for a transfer amount
+function getApprovalRequirements(bankId, amount) {
+  const ruleStmt = db.prepare(`
+    SELECT * FROM approval_rules 
+    WHERE bank_id = ? AND min_amount <= ? AND (max_amount IS NULL OR max_amount >= ?)
+    ORDER BY min_amount DESC 
+    LIMIT 1
+  `);
+  const rule = ruleStmt.get(bankId, amount, amount);
+
+  return rule || { auto_approve: true, required_approvals: 0, required_role_level: 1 };
+}
 
 /**
  * @swagger
  * /api/transfers/initiate:
  *   post:
- *     summary: Initiate a transfer between wallets
- *     description: Creates a new interbank transfer that completes in approximately 30 seconds
+ *     summary: Initiate a transfer (with approval workflow)
+ *     description: Creates a new interbank transfer that may require approvals based on bank rules
  *     tags: [Transfers]
+ *     security:
+ *       - ApiKeyAuth: []
  *     requestBody:
  *       required: true
  *       content:
@@ -78,104 +38,296 @@ let transferCounter = 1;
  *               - toWalletId
  *               - amount
  *               - currency
+ *               - initiated_by
  *             properties:
  *               fromWalletId:
  *                 type: string
- *                 description: Source wallet identifier
  *                 example: "wallet_1000"
  *               toWalletId:
  *                 type: string
- *                 description: Destination wallet identifier
  *                 example: "wallet_1001"
  *               amount:
  *                 type: number
- *                 minimum: 0.01
- *                 description: Transfer amount (must be greater than 0)
- *                 example: 50000
+ *                 example: 75000
  *               currency:
  *                 type: string
- *                 description: Transfer currency
  *                 example: "USDC"
+ *               initiated_by:
+ *                 type: string
+ *                 example: "user_abc123"
  *               reason:
  *                 type: string
- *                 description: Optional transfer reason
- *                 example: "Liquidity rebalancing between subsidiaries"
+ *                 example: "Quarterly liquidity rebalancing"
  *     responses:
  *       201:
  *         description: Transfer initiated successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 message:
- *                   type: string
- *                   example: "Transfer initiated successfully"
- *                 transfer:
- *                   $ref: '#/components/schemas/Transfer'
- *                 estimatedTime:
- *                   type: string
- *                   example: "30 seconds"
- *       400:
- *         description: Invalid request parameters
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 error:
- *                   type: string
- *                   example: "Missing required fields"
  */
-router.post('/initiate', (req, res) => {
-  const { fromWalletId, toWalletId, amount, currency, reason } = req.body;
+router.post('/initiate', authenticateBank, async (req, res) => {
+  const { fromWalletId, toWalletId, amount, currency, initiated_by, reason } = req.body;
   
-  // Validate required fields
-  if (!fromWalletId || !toWalletId || !amount || !currency) {
+  if (!fromWalletId || !toWalletId || !amount || !currency || !initiated_by) {
     return res.status(400).json({
       error: "Missing required fields",
-      required: ["fromWalletId", "toWalletId", "amount", "currency"]
+      required: ["fromWalletId", "toWalletId", "amount", "currency", "initiated_by"]
     });
   }
 
-  // Validate amount
   if (amount <= 0) {
     return res.status(400).json({
       error: "Amount must be greater than 0"
     });
   }
 
-  // Create transfer record
-  const transfer = {
-    id: `transfer_${transferCounter++}`,
-    fromWalletId: fromWalletId,
-    toWalletId: toWalletId,
-    amount: parseFloat(amount),
-    currency: currency,
-    reason: reason || "Interbank transfer",
-    status: "processing",
-    initiatedAt: new Date(),
-    estimatedCompletion: new Date(Date.now() + 30000), // 30 seconds
-    fees: amount * 0.001, // 0.1% fee
-    transactionHash: `0x${Math.random().toString(16).substr(2, 64)}`
-  };
-
-  transfers.push(transfer);
-
-  // Simulate instant processing (in real world, this would hit blockchain)
-  setTimeout(() => {
-    const transferIndex = transfers.findIndex(t => t.id === transfer.id);
-    if (transferIndex !== -1) {
-      transfers[transferIndex].status = "completed";
-      transfers[transferIndex].completedAt = new Date();
+  try {
+    // Verify user belongs to this bank
+    const userStmt = db.prepare('SELECT * FROM bank_users WHERE user_id = ? AND bank_id = ?');
+    const user = userStmt.get(initiated_by, req.bank.id);
+    
+    if (!user || user.status !== 'active') {
+      return res.status(403).json({
+        error: "Invalid or inactive user"
+      });
     }
-  }, 5000); // Complete after 5 seconds for demo
 
-  res.status(201).json({
-    message: "Transfer initiated successfully",
-    transfer: transfer,
-    estimatedTime: "30 seconds"
-  });
+    // Get approval requirements
+    const approvalRule = getApprovalRequirements(req.bank.id, amount);
+    
+    // Create transfer
+    const transfer_id = `transfer_${transferCounter++}`;
+    const fees = amount * 0.001; // 0.1% fee
+    const transactionHash = `0x${Math.random().toString(16).substr(2, 64)}`;
+    
+    let approval_status = 'pending_approval';
+    let estimatedCompletion = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours for approval
+    
+    if (approvalRule.auto_approve) {
+      approval_status = 'auto_approved';
+      estimatedCompletion = new Date(Date.now() + 30000); // 30 seconds
+    }
+
+    // Get the logic box ID (using the first one for simplicity)
+    const logicBoxStmt = db.prepare('SELECT logic_id FROM core_stablecoin_logic_box LIMIT 1');
+    const logicBox = logicBoxStmt.get();
+    if (!logicBox) {
+      return res.status(500).json({
+        error: "Stablecoin logic not configured"
+      });
+    }
+
+    // Insert into transaction_records table
+    const transferStmt = db.prepare(`
+      INSERT INTO transaction_records (
+        logic_id, transaction_hash, amount, timestamp, status, initiated_by,
+        approval_status, required_approvals, current_approvals, approval_deadline
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    const result = transferStmt.run(
+      logicBox.logic_id, transactionHash, amount, new Date().toISOString(), 
+      approval_status === 'auto_approved' ? 'processing' : 'pending_approval',
+      initiated_by, approval_status, approvalRule.required_approvals || 0, 0, estimatedCompletion.toISOString()
+    );
+
+    // If auto-approved, simulate processing
+    if (approval_status === 'auto_approved') {
+      setTimeout(() => {
+        try {
+          const updateStmt = db.prepare('UPDATE transaction_records SET status = ? WHERE transaction_id = ?');
+          updateStmt.run('completed', result.lastInsertRowid);
+        } catch (error) {
+          console.error('Error updating transfer status:', error);
+        }
+      }, 5000);
+    }
+
+    const getTransferStmt = db.prepare('SELECT * FROM transaction_records WHERE transaction_id = ?');
+    const transfer = getTransferStmt.get(result.lastInsertRowid);
+
+    let response = {
+      message: approval_status === 'auto_approved' ? "Transfer initiated and auto-approved" : "Transfer initiated - pending approval",
+      transfer: {
+        id: `transfer_${transfer.transaction_id}`,
+        fromWalletId: fromWalletId,
+        toWalletId: toWalletId,
+        amount: transfer.amount,
+        currency: currency,
+        reason: reason || "Interbank transfer",
+        status: transfer.status,
+        initiatedAt: transfer.timestamp,
+        estimatedCompletion: estimatedCompletion,
+        fees: fees,
+        transactionHash: transfer.transaction_hash,
+        initiated_by: transfer.initiated_by,
+        approval_status: transfer.approval_status,
+        required_approvals: transfer.required_approvals,
+        current_approvals: transfer.current_approvals
+      }
+    };
+
+    if (approval_status !== 'auto_approved') {
+      response.next_steps = [
+        "Transfer requires approval",
+        `Required approvals: ${approvalRule.required_approvals}`,
+        `Required role level: ${approvalRule.required_role_level}`,
+        "Use the approval endpoint to approve this transfer"
+      ];
+    }
+
+    res.status(201).json(response);
+
+  } catch (error) {
+    console.error('Transfer initiation error:', error);
+    res.status(500).json({
+      error: "Failed to initiate transfer"
+    });
+  }
+});
+
+/**
+ * @swagger
+ * /api/transfers/{transferId}/approve:
+ *   post:
+ *     summary: Approve a transfer
+ *     description: Approve a pending transfer (requires appropriate role level)
+ *     tags: [Transfers]
+ *     security:
+ *       - ApiKeyAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: transferId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - approver_user_id
+ *             properties:
+ *               approver_user_id:
+ *                 type: string
+ *                 example: "user_abc123"
+ *               comments:
+ *                 type: string
+ *                 example: "Approved after review"
+ *     responses:
+ *       200:
+ *         description: Transfer approved successfully
+ */
+router.post('/:transferId/approve', authenticateBank, async (req, res) => {
+  const { transferId } = req.params;
+  const { approver_user_id, comments } = req.body;
+
+  if (!approver_user_id) {
+    return res.status(400).json({
+      error: "Missing required fields",
+      required: ["approver_user_id"]
+    });
+  }
+
+  try {
+    // Verify approver belongs to this bank
+    const approverStmt = db.prepare('SELECT * FROM bank_users WHERE user_id = ? AND bank_id = ?');
+    const approver = approverStmt.get(approver_user_id, req.bank.id);
+    
+    if (!approver || approver.status !== 'active') {
+      return res.status(403).json({
+        error: "Invalid or inactive approver"
+      });
+    }
+
+    // Get transfer details
+    const numericId = transferId.replace('transfer_', '');
+    const transferStmt = db.prepare('SELECT * FROM transaction_records WHERE transaction_id = ?');
+    const transfer = transferStmt.get(numericId);
+    
+    if (!transfer) {
+      return res.status(404).json({
+        error: "Transfer not found"
+      });
+    }
+
+    if (transfer.status === 'completed') {
+      return res.status(400).json({
+        error: "Transfer already completed"
+      });
+    }
+
+    if (transfer.approval_status === 'auto_approved') {
+      return res.status(400).json({
+        error: "Transfer was auto-approved, no manual approval needed"
+      });
+    }
+
+    // Check if user has already approved this transfer
+    const existingApprovalStmt = db.prepare('SELECT * FROM transfer_approvals WHERE transfer_id = ? AND approver_user_id = ?');
+    const existingApproval = existingApprovalStmt.get(transferId, approver_user_id);
+    
+    if (existingApproval) {
+      return res.status(400).json({
+        error: "User has already approved this transfer"
+      });
+    }
+
+    // Get approval requirements
+    const approvalRule = await getApprovalRequirements(req.bank.id, transfer.amount);
+    
+    // Check if approver has sufficient role level
+    const approverRoleStmt = db.prepare('SELECT role_level FROM roles WHERE bank_id = ? AND role_name = ?');
+    const approverRole = approverRoleStmt.get(req.bank.id, approver.role);
+    
+    if (!approverRole || approverRole.role_level < approvalRule.required_role_level) {
+      return res.status(403).json({
+        error: "Insufficient role level to approve this transfer",
+        required_level: approvalRule.required_role_level,
+        approver_level: approverRole?.role_level
+      });
+    }
+
+    // Record approval
+    const approvalStmt = db.prepare(`
+      INSERT INTO transfer_approvals (transfer_id, approver_user_id, approved_at, comments, approval_method, ip_address)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    approvalStmt.run(transferId, approver_user_id, new Date().toISOString(), comments || "Approved", "api", req.ip);
+
+    // Update transfer approval count
+    const newApprovalCount = transfer.current_approvals + 1;
+    const updateApprovalStmt = db.prepare('UPDATE transaction_records SET current_approvals = ? WHERE transaction_id = ?');
+    updateApprovalStmt.run(newApprovalCount, numericId);
+
+    // Check if enough approvals received
+    if (newApprovalCount >= transfer.required_approvals) {
+      const updateStatusStmt = db.prepare('UPDATE transaction_records SET status = ?, approval_status = ? WHERE transaction_id = ?');
+      updateStatusStmt.run('processing', 'approved', numericId);
+      
+      // Simulate processing
+      setTimeout(() => {
+        try {
+          const completeStmt = db.prepare('UPDATE transaction_records SET status = ? WHERE transaction_id = ?');
+          completeStmt.run('completed', numericId);
+        } catch (error) {
+          console.error('Error updating transfer status:', error);
+        }
+      }, 5000);
+    }
+
+    res.json({
+      message: "Transfer approved successfully",
+      transfer_id: transferId,
+      current_approvals: newApprovalCount,
+      required_approvals: transfer.required_approvals,
+      status: newApprovalCount >= transfer.required_approvals ? "approved" : "pending_approval"
+    });
+
+  } catch (error) {
+    console.error('Transfer approval error:', error);
+    res.status(500).json({
+      error: "Failed to approve transfer"
+    });
+  }
 });
 
 /**
@@ -183,161 +335,116 @@ router.post('/initiate', (req, res) => {
  * /api/transfers/{transferId}/status:
  *   get:
  *     summary: Get transfer status
- *     description: Retrieves the current status and details of a specific transfer
+ *     description: Get detailed status of a transfer including approval progress
  *     tags: [Transfers]
+ *     security:
+ *       - ApiKeyAuth: []
  *     parameters:
  *       - in: path
  *         name: transferId
  *         required: true
- *         description: Unique transfer identifier
  *         schema:
  *           type: string
- *           example: "transfer_1"
  *     responses:
  *       200:
  *         description: Transfer status retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 transferId:
- *                   type: string
- *                   example: "transfer_1"
- *                 status:
- *                   type: string
- *                   example: "completed"
- *                 amount:
- *                   type: number
- *                   example: 50000
- *                 currency:
- *                   type: string
- *                   example: "USDC"
- *                 fromWallet:
- *                   type: string
- *                   example: "wallet_1000"
- *                 toWallet:
- *                   type: string
- *                   example: "wallet_1001"
- *                 transactionHash:
- *                   type: string
- *                   example: "0xe75225c349546"
- *                 completedAt:
- *                   type: string
- *                   format: date-time
- *                 processingTime:
- *                   type: string
- *                   example: "5 seconds"
- *       404:
- *         description: Transfer not found
  */
-router.get('/:transferId/status', (req, res) => {
+router.get('/:transferId/status', authenticateBank, async (req, res) => {
   const { transferId } = req.params;
-  
-  const transfer = transfers.find(t => t.id === transferId);
-  
-  if (!transfer) {
-    return res.status(404).json({
-      error: "Transfer not found"
+
+  try {
+    const numericId = transferId.replace('transfer_', '');
+    const transferStmt = db.prepare('SELECT * FROM transaction_records WHERE transaction_id = ?');
+    const transfer = transferStmt.get(numericId);
+    
+    if (!transfer) {
+      return res.status(404).json({
+        error: "Transfer not found"
+      });
+    }
+
+    // Get approval details
+    const approvalsStmt = db.prepare(`
+      SELECT ta.approver_user_id, ta.approved_at, ta.comments, bu.full_name, bu.role
+      FROM transfer_approvals ta
+      JOIN bank_users bu ON ta.approver_user_id = bu.user_id
+      WHERE ta.transfer_id = ?
+      ORDER BY ta.approved_at ASC
+    `);
+    const approvals = approvalsStmt.all(transferId);
+
+    res.json({
+      transfer_id: `transfer_${transfer.transaction_id}`,
+      status: transfer.status,
+      amount: transfer.amount,
+      currency: "USDC",
+      transaction_hash: transfer.transaction_hash,
+      initiated_by: transfer.initiated_by,
+      approval_status: transfer.approval_status,
+      current_approvals: transfer.current_approvals,
+      required_approvals: transfer.required_approvals,
+      timestamp: transfer.timestamp,
+      approvals: approvals,
+      progress: {
+        approved: transfer.current_approvals,
+        required: transfer.required_approvals,
+        percentage: Math.round((transfer.current_approvals / transfer.required_approvals) * 100) || 0
+      }
+    });
+  } catch (error) {
+    console.error('Error getting transfer status:', error);
+    res.status(500).json({
+      error: "Failed to get transfer status"
     });
   }
-
-  res.json({
-    transferId: transfer.id,
-    status: transfer.status,
-    amount: transfer.amount,
-    currency: transfer.currency,
-    fromWallet: transfer.fromWalletId,
-    toWallet: transfer.toWalletId,
-    transactionHash: transfer.transactionHash,
-    completedAt: transfer.completedAt,
-    processingTime: transfer.completedAt ? 
-      `${Math.round((transfer.completedAt - transfer.initiatedAt) / 1000)} seconds` : 
-      "Processing..."
-  });
 });
 
 /**
  * @swagger
- * /api/transfers/history/{walletId}:
+ * /api/transfers/pending:
  *   get:
- *     summary: Get transfer history for a wallet
- *     description: Retrieves all transfers (incoming and outgoing) for a specific wallet
+ *     summary: Get pending transfers
+ *     description: Get all pending transfers for the authenticated bank
  *     tags: [Transfers]
- *     parameters:
- *       - in: path
- *         name: walletId
- *         required: true
- *         description: Wallet identifier
- *         schema:
- *           type: string
- *           example: "wallet_1000"
+ *     security:
+ *       - ApiKeyAuth: []
  *     responses:
  *       200:
- *         description: Transfer history retrieved successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 walletId:
- *                   type: string
- *                   example: "wallet_1000"
- *                 totalTransfers:
- *                   type: number
- *                   example: 1
- *                 transfers:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       id:
- *                         type: string
- *                         example: "transfer_1"
- *                       type:
- *                         type: string
- *                         enum: [incoming, outgoing]
- *                         example: "outgoing"
- *                       amount:
- *                         type: number
- *                         example: 50000
- *                       currency:
- *                         type: string
- *                         example: "USDC"
- *                       otherWallet:
- *                         type: string
- *                         example: "wallet_1001"
- *                       status:
- *                         type: string
- *                         example: "completed"
- *                       date:
- *                         type: string
- *                         format: date-time
- *                       reason:
- *                         type: string
- *                         example: "Liquidity rebalancing between subsidiaries"
+ *         description: Pending transfers retrieved successfully
  */
-router.get('/history/:walletId', (req, res) => {
-  const { walletId } = req.params;
-  
-  const walletTransfers = transfers.filter(t => 
-    t.fromWalletId === walletId || t.toWalletId === walletId
-  );
-  
-  res.json({
-    walletId: walletId,
-    totalTransfers: walletTransfers.length,
-    transfers: walletTransfers.map(t => ({
-      id: t.id,
-      type: t.fromWalletId === walletId ? "outgoing" : "incoming",
-      amount: t.amount,
-      currency: t.currency,
-      otherWallet: t.fromWalletId === walletId ? t.toWalletId : t.fromWalletId,
-      status: t.status,
-      date: t.initiatedAt,
-      reason: t.reason
-    }))
-  });
+router.get('/pending', authenticateBank, async (req, res) => {
+  try {
+    const pendingTransfersStmt = db.prepare(`
+      SELECT transaction_id, transaction_hash, amount, timestamp, status, initiated_by,
+             approval_status, current_approvals, required_approvals, approval_deadline
+      FROM transaction_records 
+      WHERE status IN ('pending_approval', 'processing') AND initiated_by IN (
+        SELECT user_id FROM bank_users WHERE bank_id = ?
+      )
+      ORDER BY timestamp DESC
+    `);
+    const pendingTransfers = pendingTransfersStmt.all(req.bank.id);
+
+    res.json({
+      bank_name: req.bank.bank_name,
+      total_pending: pendingTransfers.length,
+      transfers: pendingTransfers.map(t => ({
+        id: `transfer_${t.transaction_id}`,
+        amount: t.amount,
+        status: t.status,
+        approval_status: t.approval_status,
+        current_approvals: t.current_approvals,
+        required_approvals: t.required_approvals,
+        initiated_at: t.timestamp,
+        deadline: t.approval_deadline
+      }))
+    });
+  } catch (error) {
+    console.error('Error getting pending transfers:', error);
+    res.status(500).json({
+      error: "Failed to get pending transfers"
+    });
+  }
 });
 
-module.exports = router;
+module.exports = router; 
