@@ -33,6 +33,7 @@ const express = require('express'); // Web framework for creating API endpoints
 const crypto = require('crypto'); // Cryptography library for generating secure API keys
 const db = require('./database/connection'); // Database connection for storing bank data
 const router = express.Router(); // Router for organizing bank-related endpoints
+const { randomUUID } = require('crypto');
 
 /**
  * SWAGGER API DOCUMENTATION - BANK DATA STRUCTURES

@@ -4,7 +4,7 @@ const nodemailer = require('nodemailer');
 const twilio = require('twilio');
 const axios = require('axios');
 const crypto = require('crypto');
-const { v4: uuidv4 } = require('uuid');
+const { randomUUID } = require('crypto');
 const db = require('./database/connection');
 
 const router = express.Router();
@@ -147,7 +147,7 @@ class NotificationService {
     wss = new WebSocket.Server({ server });
     
     wss.on('connection', (ws, req) => {
-      const connectionId = uuidv4();
+      const connectionId = randomUUID();
       const ip = req.socket.remoteAddress;
       const userAgent = req.headers['user-agent'] || 'Unknown';
       
